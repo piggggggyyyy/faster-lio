@@ -7,9 +7,11 @@
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <condition_variable>
+#include <memory>
 #include <thread>
 
 #include "imu_processing.hpp"
+#include "invkf.hpp"
 #include "ivox3d/ivox3d.h"
 #include "options.h"
 #include "pointcloud_preprocess.h"
@@ -86,7 +88,7 @@ class LaserMapping {
     std::shared_ptr<IVoxType> ivox_ = nullptr;                    // localmap in ivox
     std::shared_ptr<PointCloudPreprocess> preprocess_ = nullptr;  // point cloud preprocess
     std::shared_ptr<ImuProcess> p_imu_ = nullptr;                 // imu process
-
+    std::shared_ptr<InvariantKF::invkf> invkf_ptr;
     /// local map related
     float det_range_ = 300.0f;
     double cube_len_ = 0;
@@ -150,7 +152,9 @@ class LaserMapping {
     ///////////////////////// EKF inputs and output ///////////////////////////////////////////////////////
     common::MeasureGroup measures_;                    // sync IMU and lidar scan
     esekfom::esekf<state_ikfom, 12, input_ikfom> kf_;  // esekf
-    state_ikfom state_point_;                          // ekf current state
+    //InvariantKF::invkf invkf_ptr;
+    state_ikfom state_point_;
+    InvariantKF::invkf::State24 state;                          // ekf current state
     vect3 pos_lidar_;                                  // lidar position after eskf update
     common::V3D euler_cur_ = common::V3D::Zero();      // rotation in euler angles
     bool extrinsic_est_en_ = true;

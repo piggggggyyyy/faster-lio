@@ -1,9 +1,13 @@
 #include <tf/transform_broadcaster.h>
 #include <yaml-cpp/yaml.h>
+#include <cstddef>
 #include <execution>
 #include <fstream>
+#include <memory>
 
 #include "laser_mapping.h"
+
+#include "use-ikfom.hpp"
 #include "utils.h"
 
 namespace faster_lio {
@@ -14,7 +18,7 @@ bool LaserMapping::InitROS(ros::NodeHandle &nh) {
 
     // localmap init (after LoadParams)
     ivox_ = std::make_shared<IVoxType>(ivox_options_);
-
+    invkf_ptr = std::make_shared<InvariantKF::invkf>();
     // esekf init
     std::vector<double> epsi(23, 0.001);
     kf_.init_dyn_share(
@@ -271,12 +275,12 @@ void LaserMapping::Run() {
     }
 
     /// IMU process, kf prediction, undistortion
-    p_imu_->Process(measures_, kf_, scan_undistort_);
+    //p_imu_->Process(measures_, invkf_ptr, scan_undistort_);
+    p_imu_->Process(measures_, kf_, scan_undistort_);//forward and backward propagation
     if (scan_undistort_->empty() || (scan_undistort_ == nullptr)) {
         LOG(WARNING) << "No point, skip this scan!";
         return;
     }
-
     /// the first scan
     if (flg_first_scan_) {
         ivox_->AddPoints(scan_undistort_->points);
@@ -285,7 +289,6 @@ void LaserMapping::Run() {
         return;
     }
     flg_EKF_inited_ = (measures_.lidar_bag_time_ - first_lidar_time_) >= options::INIT_TIME;
-
     /// downsample
     Timer::Evaluate(
         [&, this]() {
@@ -294,7 +297,7 @@ void LaserMapping::Run() {
         },
         "Downsample PointCloud");
 
-    int cur_pts = scan_down_body_->size();
+    int cur_pts = scan_down_body_->size();//downsample后的scan
     if (cur_pts < 5) {
         LOG(WARNING) << "Too few points, skip this scan!" << scan_undistort_->size() << ", " << scan_down_body_->size();
         return;
@@ -305,8 +308,10 @@ void LaserMapping::Run() {
     point_selected_surf_.resize(cur_pts, true);
     plane_coef_.resize(cur_pts, common::V4F::Zero());
 
+    int ppp;
     // ICP and iterated Kalman filter update
-    Timer::Evaluate(
+    if(1){
+        Timer::Evaluate(
         [&, this]() {
             // iterated state estimation
             double solve_H_time = 0;
@@ -318,6 +323,25 @@ void LaserMapping::Run() {
             pos_lidar_ = state_point_.pos + state_point_.rot * state_point_.offset_T_L_I;
         },
         "IEKF Solve and Update");
+    }else { 
+        //状态更新todo
+        Timer::Evaluate(
+        [&, this]() {
+            // iterated state estimation
+            double solve_H_time = 0;
+            // // update the observation model, will call nn and point-to-plane residual computation
+            invkf_ptr->update();
+            state = invkf_ptr->getX();
+            euler_cur_= SO3ToEuler(state.imu_state.R.asMatrix());
+            pos_lidar_= state.imu_state.x[1] + state.imu_state.R * state.ext_t;
+            // // save the state
+            // state_point_ = kf_.get_x();
+            // euler_cur_ = SO3ToEuler(state_point_.rot);
+            // pos_lidar_ = state_point_.pos + state_point_.rot * state_point_.offset_T_L_I;
+        },
+        "Invariant Kalman Solve and Update");
+    }
+    
 
     // update local map
     Timer::Evaluate([&, this]() { MapIncremental(); }, "    Incremental Mapping");
@@ -528,6 +552,7 @@ void LaserMapping::MapIncremental() {
             }
             if (need_add) {
                 points_to_add.emplace_back(point_world);
+                //not every point is added to the ivox
             }
         } else {
             points_to_add.emplace_back(point_world);
