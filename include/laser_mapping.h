@@ -152,9 +152,9 @@ class LaserMapping {
 
     ///////////////////////// EKF inputs and output ///////////////////////////////////////////////////////
     common::MeasureGroup measures_;                    // sync IMU and lidar scan
-    esekfom::esekf<state_ikfom, 12, input_ikfom> kf_;  // esekf
+    // esekfom::esekf<state_ikfom, 12, input_ikfom> kf_;  // esekf
     //InvariantKF::invkf invkf_ptr;
-    state_ikfom state_point_;
+    // state_ikfom state_point_;
     InvariantKF::invkf::State24 state;                          // ekf current state
     vect3 pos_lidar_;                                  // lidar position after eskf update
     common::V3D euler_cur_ = common::V3D::Zero();      // rotation in euler angles

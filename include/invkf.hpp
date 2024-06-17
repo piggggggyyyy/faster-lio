@@ -1,9 +1,10 @@
 #ifndef FASTER_LIO_INVKF_H
 #define FASTER_LIO_INVKF_H
+#include <fcntl.h>
 #include <Eigen/Dense>
 #include <iostream>
 #include <memory>
-
+#include <fstream>
 
 #include "Eigen/src/Core/Matrix.h"
 #include "Eigen/src/Core/util/Constants.h"
@@ -11,6 +12,7 @@
 
 #include "liepp/SEn3.h"
 #include "liepp/SO3.h"
+#include "use-ikfom.hpp"
 
 
 namespace InvariantKF{
@@ -36,13 +38,15 @@ namespace InvariantKF{
             return Eye3;
         }
     }  
+    
     // template <typename state, int process_noise_dof, typename input, typename measurement ,
     //       int measurement_noise_dof = 0>
     class invkf{
        
         public:
         invkf(){
-            
+                    
+        
             // imu_state.setIdentity();
             // gravity.setZero();
             // theta.setZero();
@@ -57,6 +61,7 @@ namespace InvariantKF{
             // P(21, 21) =  P(22, 22) = 0.00001;
             
         };
+
     template <typename T>
     struct LioZHModel {
         bool valid;
@@ -84,6 +89,7 @@ namespace InvariantKF{
                 ext_t.setZero();//3
             }
         };
+
         using measurementModel_dyn_share = std::function<void(State24 &, LioZHModel<double> &)>;
         measurementModel_dyn_share obsModel;
         void initObsModel(measurementModel_dyn_share obsModel_){
@@ -93,18 +99,11 @@ namespace InvariantKF{
             acc = acc_- state.ba; 
             gyr = gyr_- state.bg;  
             
-            auto rotation = (state.imu_state.R  * liepp::SO3<double>().exp(gyr * dt)); // r * exp(w * dt)
-            //Eigen::Quaterniond rotation_qua = rotation.asQuaternion();
-            //  std::cout <<"@@@@@@@@@@@@@@@@" << std::endl;
-            // std::cout << "acc::" << acc(0)<<"  "<< acc(1) <<"  "<< acc(2) << std::endl;
-            // std::cout <<"@@@@@@@@@@@@@@@@" << std::endl;
-            // std::cout << "rotation * acc::" << (rotation * acc)(0)<<"  "<< (rotation * acc)(1) <<"  "<< (rotation * acc)(2) << std::endl;
-            //  std::cout <<"@@@@@@@@@@@@@@@@" << std::endl;
-            // std::cout << "gravity" << state.gravity(0)<<"  "<< state.gravity(1) <<"  "<< state.gravity(2) << std::endl;
+            auto rotation = ( state.imu_state.R  * faster_lio::SO3::exp(gyr * dt) ); // r * exp(w * dt)
+            std::cout << state.gravity(0) <<" "<< state.gravity(1) <<" " << state.gravity(2) << std::endl<<std::endl;
             Eigen::Vector3d velocity = state.imu_state.x[0] + (rotation * acc + state.gravity) * dt; // v+(r * a+ g) * dt
             Eigen::Vector3d position = state.imu_state.x[0] * dt + state.imu_state.x[1] + 0.5 * (rotation * acc + state.gravity) * dt * dt; //p + v * dt + 0.5 *()
             Eigen::Matrix3d rotation_mat = rotation.asMatrix();
-            
             std::array<Eigen::Vector3d, 2> temp{velocity,position};
             liepp::SEn3<2> new_state(rotation,temp);//set state
             state.imu_state = new_state;
@@ -183,12 +182,7 @@ namespace InvariantKF{
 
             std::cout << "dx" << dx_ << std::endl;
             state.imu_state = liepp::SEn3<2>::exp(dx_.segment(0,9)) * state.imu_state ;
-            std::cout << liepp::SEn3<2>::exp(dx_.segment(0,9)).R.asMatrix()<< std::endl;
-            std::cout << liepp::SEn3<2>::exp(dx_.segment(0,9)).x[1]<< std::endl;
-            // std::cout << "trans" <<state.imu_state.x[1] << std::endl;
-            // std::cout << "velocity" <<state.imu_state.x[0] << std::endl;
-            // std::cout << "trans update" <<dx_.segment(6,3) << std::endl;
-            // std::cout << "velocity update" <<dx_.segment(3,3) << std::endl;
+
             
             state.bg = dx_.segment(9,3) + state.bg;
             state.ba = dx_.segment(12,3) + state.ba;
