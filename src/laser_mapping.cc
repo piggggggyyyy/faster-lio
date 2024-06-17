@@ -1,15 +1,22 @@
 #include <tf/transform_broadcaster.h>
 #include <yaml-cpp/yaml.h>
+#include <algorithm>
 #include <cstddef>
 #include <execution>
 #include <fstream>
 #include <memory>
+#include <vector>
 
 #include "laser_mapping.h"
 
+#include "Eigen/src/Core/Matrix.h"
+#include "common_lib.h"
+#include "invkf.hpp"
+#include "options.h"
+#include "so3_math.h"
 #include "use-ikfom.hpp"
 #include "utils.h"
-
+#define use_original false
 namespace faster_lio {
 
 bool LaserMapping::InitROS(ros::NodeHandle &nh) {
@@ -18,7 +25,9 @@ bool LaserMapping::InitROS(ros::NodeHandle &nh) {
 
     // localmap init (after LoadParams)
     ivox_ = std::make_shared<IVoxType>(ivox_options_);
-    invkf_ptr = std::make_shared<InvariantKF::invkf>();
+    invkf_ptr = std::make_shared<InvariantKF::invkf>();//defauclt constructor to initialize
+    //initibosmodel function to intialize
+    invkf_ptr->initObsModel([this](InvariantKF::invkf::State24 &s, InvariantKF::invkf::LioZHModel<double> &obs_data) { ObsModel(s, obs_data); });
     // esekf init
     std::vector<double> epsi(23, 0.001);
     kf_.init_dyn_share(
@@ -275,8 +284,13 @@ void LaserMapping::Run() {
     }
 
     /// IMU process, kf prediction, undistortion
-    //p_imu_->Process(measures_, invkf_ptr, scan_undistort_);
-    p_imu_->Process(measures_, kf_, scan_undistort_);//forward and backward propagation
+    if(use_original){
+        p_imu_->Process(measures_, kf_, scan_undistort_);//forward and backward propagation
+    }else{
+        p_imu_->Process(measures_, invkf_ptr, scan_undistort_);
+    }
+    
+    
     if (scan_undistort_->empty() || (scan_undistort_ == nullptr)) {
         LOG(WARNING) << "No point, skip this scan!";
         return;
@@ -310,13 +324,13 @@ void LaserMapping::Run() {
 
     int ppp;
     // ICP and iterated Kalman filter update
-    if(1){
+    if(use_original){
         Timer::Evaluate(
         [&, this]() {
             // iterated state estimation
             double solve_H_time = 0;
             // update the observation model, will call nn and point-to-plane residual computation
-            kf_.update_iterated_dyn_share_modified(options::LASER_POINT_COV, solve_H_time);
+           kf_.update_iterated_dyn_share_modified(options::LASER_POINT_COV, solve_H_time);//here is a R
             // save the state
             state_point_ = kf_.get_x();
             euler_cur_ = SO3ToEuler(state_point_.rot);
@@ -329,10 +343,14 @@ void LaserMapping::Run() {
         [&, this]() {
             // iterated state estimation
             double solve_H_time = 0;
+            // alerady have a state prediction,we need to pass the map pointer
             // // update the observation model, will call nn and point-to-plane residual computation
-            invkf_ptr->update();
+           // invkf_ptr->update(options::LASER_POINT_COV,solve_H_time);
             state = invkf_ptr->getX();
+            state_point_.rot = state.imu_state.R.asQuaternion();
+            state_point_.pos = state.imu_state.x[1];
             euler_cur_= SO3ToEuler(state.imu_state.R.asMatrix());
+            //LOG(INFO) << state_point_.offset_T_L_I << "---------------------------";
             pos_lidar_= state.imu_state.x[1] + state.imu_state.R * state.ext_t;
             // // save the state
             // state_point_ = kf_.get_x();
@@ -374,7 +392,7 @@ void LaserMapping::Run() {
             PublishFrameEffectWorld(pub_laser_cloud_effect_world_);
         }
     }
-
+    //PrintState(state_point_);
     // Debug variables
     frame_num_++;
 }
@@ -684,7 +702,122 @@ void LaserMapping::ObsModel(state_ikfom &s, esekfom::dyn_share_datastruct<double
         },
         "    ObsModel (IEKF Build Jacobian)");
 }
+void LaserMapping::ObsModel(InvariantKF::invkf::State24 &s, InvariantKF::invkf::LioZHModel<double> &obs_data){
+    int cnt_pts = scan_down_body_->size();
+    std::vector<size_t> index(cnt_pts);
+    for (size_t i = 0; i < index.size(); i++){
+        index[i] = i;
+    }
+    Timer::Evaluate([&,this]() {
+        auto R_wl = s.imu_state.R.asMatrix() * s.ext_r; //todo cast float?
+        auto t_wl = s.imu_state.R.asMatrix() * s.ext_t +s.imu_state.x[1];
+        std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t &i){
+            PointType &point_body = scan_down_body_->points[i];
+            PointType &point_world = scan_down_world_->points[i];
 
+            common::V3F p_body = point_body.getVector3fMap();
+            point_world.intensity = point_body.intensity;
+            auto &points_near = nearest_points_[i];
+            if(obs_data.converge){
+                ivox_->GetClosestPoint(point_world, points_near, options::NUM_MATCH_POINTS);
+                point_selected_surf_[i] = points_near.size() >= options::MIN_NUM_MATCH_POINTS;
+                if (point_selected_surf_[i]) {
+                    point_selected_surf_[i] =
+                        common::esti_plane(plane_coef_[i], points_near, options::ESTI_PLANE_THRESHOLD);
+                }
+            }
+            if (point_selected_surf_[i]) {
+                auto temp = point_world.getVector4fMap();
+                temp[3] = 1.0;
+                float pd2 = plane_coef_[i].dot(temp);
+
+                bool valid_corr = p_body.norm() > 81 * pd2 * pd2;
+                if (valid_corr) {
+                    point_selected_surf_[i] = true;
+                    residuals_[i] = pd2;
+                }
+            }
+        });
+
+
+    },"ObsModel (lidar match)");
+    effect_feat_num_ = 0;
+    corr_pts_.resize(cnt_pts);
+    corr_norm_.resize(cnt_pts);
+    for (int i = 0; i < cnt_pts; i++) {
+        if (point_selected_surf_[i]) {
+            corr_norm_[effect_feat_num_] = plane_coef_[i];
+            corr_pts_[effect_feat_num_] = scan_down_body_->points[i].getVector4fMap();
+            corr_pts_[effect_feat_num_][3] = residuals_[i];
+
+            effect_feat_num_++;
+        }
+    }
+    corr_pts_.resize(effect_feat_num_);
+    corr_norm_.resize(effect_feat_num_);
+
+    if (effect_feat_num_ < 1) {
+        obs_data.valid = false;
+        LOG(WARNING) << "No Effective Points!";
+        return;
+    }
+    Timer::Evaluate(
+        [&, this]() {
+            /*** Computation of Measurement Jacobian matrix H and measurements vector ***/
+            obs_data.h_x = Eigen::MatrixXd::Zero(effect_feat_num_, 24);  
+            // 雅科比矩阵，作者设置成12维是因为残差只跟RT 外参RT有关,由于我把外参放在了后面
+            obs_data.h.resize(effect_feat_num_);
+
+            index.resize(effect_feat_num_);
+            const common::M3F off_R = s.ext_r.toRotationMatrix().cast<float>();
+            const common::V3F off_t = s.ext_t.cast<float>();
+            const common::M3F Rt = s.imu_state.R.asMatrix().transpose().cast<float>();
+            const common::M3F R = s.imu_state.R.asMatrix().cast<float>();
+            const common::V3F t = s.imu_state.x[1].cast<float>();
+            std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t &i) {
+                common::V3F point_this_be = corr_pts_[i].head<3>();
+                common::V3F point_this = off_R * point_this_be + off_t;
+                common::M3F point_crossmat = SKEW_SYM_MATRIX(point_this);
+                common::V3F points_world = R * point_this + t;
+                
+                // /*** get the normal vector of closest surface/corner ***/
+                common::V3F norm_vec = corr_norm_[i].head<3>();
+                common::V3F A(norm_vec.transpose() * (-1) * SKEW_SYM_MATRIX(points_world) );
+                // /*** calculate the Measurement Jacobian matrix H ***/
+                // common::V3F C(Rt * norm_vec);
+                // common::V3F A(point_crossmat * C);
+                
+                if (0) {
+                    // common::V3F B(point_be_crossmat * off_R.transpose() * C);
+                    // obs_data.h_x.block<1, 12>(i, 0) << norm_vec[0], norm_vec[1], norm_vec[2], A[0], A[1], A[2], B[0],
+                    //     B[1], B[2], C[0], C[1], C[2];
+                } else {
+                    // obs_data.h_x.block<1, 12>(i, 0) << -1 * point_be_crossmat[0], 1 * point_be_crossmat[1], 1 * point_be_crossmat[2], A[0], A[1], A[2], 0.0,
+                    //     0.0, 0.0, 0.0, 0.0, 0.0;
+                    //-1 * point_be_crossmat.cast<double>()(0),-1 * point_be_crossmat.cast<double>()(1),-1 * point_be_crossmat.cast<double>()(2)
+                   obs_data.h_x.block<1, 24>(i,0) <<
+                   //0.0, 0.0, 0.0,
+                    A(0), A(1),A(2),
+                    0.0, 0.0, 0.0,
+                    norm_vec.cast<double>()(0), norm_vec.cast<double>()(1), norm_vec.cast<double>()(2),
+                    0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0;
+                    // obs_data.h_x.block(i,0,1,3) = -1 * point_be_crossmat.cast<double>();
+                    // obs_data.h_x.block(i,6,1,3) = norm_vec.cast<double>();
+                    // obs_data.h_x.block(i,9,1,3) = Eigen::Vector3d::Zero();
+                    //obs_data.h_x.block(i,9,1,15) = Eigen::Matrix<double, 1, 15>::Zero().cast<double>();
+                    
+                }
+
+                /*** Measurement: distance to the closest surface/corner ***/
+                obs_data.h(i) = -corr_pts_[i][3];
+            });
+        },
+        "    ObsModel (IEKF Build Jacobian)");
+}
 /////////////////////////////////////  debug save / show /////////////////////////////////////////////////////
 
 void LaserMapping::PublishPath(const ros::Publisher pub_path) {
@@ -708,12 +841,12 @@ void LaserMapping::PublishOdometry(const ros::Publisher &pub_odom_aft_mapped) {
     auto P = kf_.get_P();
     for (int i = 0; i < 6; i++) {
         int k = i < 3 ? i + 3 : i - 3;
-        odom_aft_mapped_.pose.covariance[i * 6 + 0] = P(k, 3);
-        odom_aft_mapped_.pose.covariance[i * 6 + 1] = P(k, 4);
-        odom_aft_mapped_.pose.covariance[i * 6 + 2] = P(k, 5);
-        odom_aft_mapped_.pose.covariance[i * 6 + 3] = P(k, 0);
-        odom_aft_mapped_.pose.covariance[i * 6 + 4] = P(k, 1);
-        odom_aft_mapped_.pose.covariance[i * 6 + 5] = P(k, 2);
+        odom_aft_mapped_.pose.covariance[i * 6 + 0] = P(k, 0);
+        odom_aft_mapped_.pose.covariance[i * 6 + 1] = P(k, 1);
+        odom_aft_mapped_.pose.covariance[i * 6 + 2] = P(k, 2);
+        odom_aft_mapped_.pose.covariance[i * 6 + 3] = P(k, 3);
+        odom_aft_mapped_.pose.covariance[i * 6 + 4] = P(k, 4);
+        odom_aft_mapped_.pose.covariance[i * 6 + 5] = P(k, 5);
     }
 
     static tf::TransformBroadcaster br;
@@ -839,6 +972,7 @@ void LaserMapping::SetPosestamp(T &out) {
 
 void LaserMapping::PointBodyToWorld(const PointType *pi, PointType *const po) {
     common::V3D p_body(pi->x, pi->y, pi->z);
+
     common::V3D p_global(state_point_.rot * (state_point_.offset_R_L_I * p_body + state_point_.offset_T_L_I) +
                          state_point_.pos);
 

@@ -155,7 +155,7 @@ struct SO2 : public Eigen::Rotation2D<_scalar> {
  */
 template <class _scalar = double, int Options = Eigen::AutoAlign>
 struct SO3 : public Eigen::Quaternion<_scalar, Options> {
-    enum { DOF = 3, DIM = 3, TYP = 2 };
+    enum { DOF = 3, DIM = 3, TYP = 2 };//自由度，维度，typ标记
     typedef _scalar scalar;
     typedef Eigen::Quaternion<scalar, Options> base;
     typedef Eigen::Quaternion<scalar> Quaternion;
@@ -220,7 +220,7 @@ struct SO3 : public Eigen::Quaternion<_scalar, Options> {
         SO3 delta = exp(vec, scale);
         *this = *this * delta;
     }
-
+    //这些S2在这里干嘛？？？
     void S2_hat(Eigen::Matrix<scalar, 3, 3>& res) { res = Eigen::Matrix<scalar, 3, 3>::Zero(); }
     void S2_Nx_yy(Eigen::Matrix<scalar, 2, 3>& res) {
         std::cerr << "wrong idx for S2" << std::endl;

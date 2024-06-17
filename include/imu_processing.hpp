@@ -159,6 +159,7 @@ void ImuProcess::IMUInit(const common::MeasureGroup &meas, esekfom::esekf<state_
     kf_state.change_x(init_state);
 
     esekfom::esekf<state_ikfom, 12, input_ikfom>::cov init_P = kf_state.get_P();
+    //r , t , ext_r, ext_t
     init_P.setIdentity();
     init_P(6, 6) = init_P(7, 7) = init_P(8, 8) = 0.00001;
     init_P(9, 9) = init_P(10, 10) = init_P(11, 11) = 0.00001;
@@ -350,7 +351,11 @@ void ImuProcess::UndistortPcl(const common::MeasureGroup &meas, std::shared_ptr<
 
     double dt = 0;
 
-
+    Q_inv.block<3, 3>(0, 0).diagonal() = cov_gyr_;
+    Q_inv.block<3, 3>(3, 3).diagonal() = cov_acc_;
+    Q_inv.block<3, 3>(9, 9).diagonal() = cov_bias_gyr_;
+    Q_inv.block<3, 3>(12, 12).diagonal() = cov_bias_acc_;
+    kf_state->setQ(Q_inv);
     for (auto it_imu = v_imu.begin(); it_imu < (v_imu.end() - 1); it_imu++) {
         auto &&head = *(it_imu);
         auto &&tail = *(it_imu + 1);
@@ -375,11 +380,7 @@ void ImuProcess::UndistortPcl(const common::MeasureGroup &meas, std::shared_ptr<
         }
 
 
-        Q_inv.block<3, 3>(0, 0).diagonal() = cov_gyr_;
-        Q_inv.block<3, 3>(3, 3).diagonal() = cov_acc_;
-        Q_inv.block<3, 3>(9, 9).diagonal() = cov_bias_gyr_;
-        Q_inv.block<3, 3>(12, 12).diagonal() = cov_bias_acc_;
-        kf_state->setQ(Q_inv);
+
         kf_state->predict(dt, acc_avr,angvel_avr);
 
         /* save the poses at each IMU measurements */
@@ -479,7 +480,7 @@ void ImuProcess::IMUInit(const common::MeasureGroup &meas, std::shared_ptr<Invar
     InvariantKF::invkf::State24 init_state = kf_state->getX();
     // state_ikfom init_state = kf_state.get_x();
     init_state.gravity = S2(-mean_acc_ / mean_acc_.norm() * common::G_m_s2); //TODO
-
+    LOG(INFO) << init_state.gravity[0] << ","<< init_state.gravity[1] << "," << init_state.gravity[2];
     init_state.bg = mean_gyr_;
     init_state.ext_t = Lidar_T_wrt_IMU_;
     init_state.ext_r = Lidar_R_wrt_IMU_;
@@ -488,11 +489,19 @@ void ImuProcess::IMUInit(const common::MeasureGroup &meas, std::shared_ptr<Invar
 
     Eigen::MatrixXd init_P = kf_state->getP();
     init_P.setIdentity();
-    init_P(6, 6) = init_P(7, 7) = init_P(8, 8) = 0.00001;
-    init_P(9, 9) = init_P(10, 10) = init_P(11, 11) = 0.00001;
-    init_P(15, 15) = init_P(16, 16) = init_P(17, 17) = 0.0001;
-    init_P(18, 18) = init_P(19, 19) = init_P(20, 20) = 0.001;
-    init_P(21, 21) = init_P(22, 22) = 0.00001;
+    init_P(3, 3) = init_P(4, 4) = init_P(5, 5) = 0.00001;
+    init_P(6, 6) = init_P(7, 7) = init_P(8, 8) = 0.0001;
+    init_P(9, 9) = init_P(10, 10) = init_P(11, 11) = 0.001;
+
+
+
+
+    // init_P(6, 6) = init_P(7, 7) = init_P(8, 8) = 0.00001;//ext_t
+    // init_P(9, 9) = init_P(10, 10) = init_P(11, 11) = 0.00001;//vel
+    // init_P(15, 15) = init_P(16, 16) = init_P(17, 17) = 0.0001;//bg
+    // init_P(18, 18) = init_P(19, 19) = init_P(20, 20) = 0.001;//ba
+    // init_P(21, 21) = init_P(22, 22) = 0.00001;//g
+    // init_P.setIdentity();
     kf_state->setP(init_P);
     last_imu_ = meas.imu_.back();
 }

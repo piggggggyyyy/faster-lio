@@ -277,7 +277,7 @@ class esekf {
         x_.oplus(f_, dt);
 
         F_x1 = cov::Identity();
-        for (std::vector<std::pair<std::pair<int, int>, int>>::iterator it = x_.vect_state.begin();
+        for (std::vector<std::pair<std::pair<int, int>, int>>::iterator it = x_.vect_state.begin(); //对vec3 dict
              it != x_.vect_state.end(); it++) {
             int idx = (*it).first.first;
             int dim = (*it).first.second;
@@ -955,7 +955,7 @@ class esekf {
         int dof_Measurement_noise;
         for (int i = -1; i < maximum_iter; i++) {
             dyn_share.valid = true;
-            h_dyn_share(x_, dyn_share);
+            h_dyn_share(x_, dyn_share);//here is a function 
             // Matrix<scalar_type, Eigen::Dynamic, 1> h = h_dyn_share (x_,  dyn_share);
             Matrix<scalar_type, Eigen::Dynamic, 1> z = dyn_share.z;
             Matrix<scalar_type, Eigen::Dynamic, 1> h = dyn_share.h;
@@ -1538,7 +1538,7 @@ class esekf {
         vectorized_state dx_new = vectorized_state::Zero();
         for (int i = -1; i < maximum_iter; i++) {
             dyn_share.valid = true;
-            h_dyn_share(x_, dyn_share);
+            h_dyn_share(x_, dyn_share);//here is our obs model
 
             if (!dyn_share.valid) {
                 continue;
@@ -1553,9 +1553,9 @@ class esekf {
             // double solve_start = omp_get_wtime();
             dof_Measurement = h_x_.rows();
             vectorized_state dx;
-            x_.boxminus(dx, x_propagated);
-            dx_new = dx;
-
+            x_.boxminus(dx, x_propagated);//获得误差dx
+            dx_new = dx;//把误差递给dx_new,下面会用来计算J，左雅科比
+            std::cout << "dx_new " << dx_new << std::endl;
             P_ = P_propagated;
 
             Matrix<scalar_type, 3, 3> res_temp_SO3;
@@ -1567,16 +1567,16 @@ class esekf {
                     seg_SO3(i) = dx(idx + i);
                 }
 
-                res_temp_SO3 = MTK::A_matrix(seg_SO3).transpose();
-                dx_new.template block<3, 1>(idx, 0) = res_temp_SO3 * dx_new.template block<3, 1>(idx, 0);
+                res_temp_SO3 = MTK::A_matrix(seg_SO3).transpose();//A_T
+                dx_new.template block<3, 1>(idx, 0) = res_temp_SO3 * dx_new.template block<3, 1>(idx, 0); //J * dx
                 for (int i = 0; i < n; i++) {
                     P_.template block<3, 1>(idx, i) = res_temp_SO3 * (P_.template block<3, 1>(idx, i));
                 }
                 for (int i = 0; i < n; i++) {
-                    P_.template block<1, 3>(i, idx) = (P_.template block<1, 3>(i, idx)) * res_temp_SO3.transpose();
+                    P_.template block<1, 3>(i, idx) = (P_.template block<1, 3>(i, idx)) * res_temp_SO3.transpose();// 协方差也要更新，J p JT
                 }
             }
-
+           // 重力的S2更新，暂不考虑
             Matrix<scalar_type, 2, 2> res_temp_S2;
             MTK::vect<2, scalar_type> seg_S2;
             for (std::vector<std::pair<int, int>>::iterator it = x_.S2_state.begin(); it != x_.S2_state.end(); it++) {
@@ -1591,7 +1591,7 @@ class esekf {
                 x_.S2_Nx_yy(Nx, idx);
                 x_propagated.S2_Mx(Mx, seg_S2, idx);
                 res_temp_S2 = Nx * Mx;
-                dx_new.template block<2, 1>(idx, 0) = res_temp_S2 * dx_new.template block<2, 1>(idx, 0);
+                dx_new.template block<2, 1>(idx, 0) = res_temp_S2 * dx_new.template block<2, 1>(idx, 0);//So3误差的J
                 for (int i = 0; i < n; i++) {
                     P_.template block<2, 1>(idx, i) = res_temp_S2 * (P_.template block<2, 1>(idx, i));
                 }
@@ -1599,124 +1599,50 @@ class esekf {
                     P_.template block<1, 2>(i, idx) = (P_.template block<1, 2>(i, idx)) * res_temp_S2.transpose();
                 }
             }
-            // Matrix<scalar_type, n, Eigen::Dynamic> K_;
-            // Matrix<scalar_type, n, 1> K_h;
-            // Matrix<scalar_type, n, n> K_x;
+        
 
-            /*
-            if(n > dof_Measurement)
-            {
-                    K_= P_ * h_x_.transpose() * (h_x_ * P_ * h_x_.transpose()/R + Eigen::Matrix<double, Dynamic,
-            Dynamic>::Identity(dof_Measurement, dof_Measurement)).inverse()/R;
-            }
-            else
-            {
-                    K_= (h_x_.transpose() * h_x_ + (P_/R).inverse()).inverse()*h_x_.transpose();
-            }
-            */
-
-            if (n > dof_Measurement) {
-                //#ifdef USE_sparse
-                // Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> K_temp = h_x * P_ * h_x.transpose();
-                // spMt R_temp = h_v * R_ * h_v.transpose();
-                // K_temp += R_temp;
+            if (n > dof_Measurement) { //这里是观测不够，少于自由度的情况，并不会运行，暂时跳过。
+                //std::cout << "test" << dof_Measurement << std::endl;
                 Eigen::Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_x_cur =
                     Eigen::Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic>::Zero(dof_Measurement, n);
                 h_x_cur.topLeftCorner(dof_Measurement, 12) = h_x_;
-                /*
-                h_x_cur.col(0) = h_x_.col(0);
-                h_x_cur.col(1) = h_x_.col(1);
-                h_x_cur.col(2) = h_x_.col(2);
-                h_x_cur.col(3) = h_x_.col(3);
-                h_x_cur.col(4) = h_x_.col(4);
-                h_x_cur.col(5) = h_x_.col(5);
-                h_x_cur.col(6) = h_x_.col(6);
-                h_x_cur.col(7) = h_x_.col(7);
-                h_x_cur.col(8) = h_x_.col(8);
-                h_x_cur.col(9) = h_x_.col(9);
-                h_x_cur.col(10) = h_x_.col(10);
-                h_x_cur.col(11) = h_x_.col(11);
-                */
-
                 Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> K_ =
                     P_ * h_x_cur.transpose() *
                     (h_x_cur * P_ * h_x_cur.transpose() / R +
                      Eigen::Matrix<double, Dynamic, Dynamic>::Identity(dof_Measurement, dof_Measurement))
                         .inverse() /
                     R;
-                K_h = K_ * dyn_share.h;
-                K_x = K_ * h_x_cur;
+                    //this kalman gain computation is not the paper method.
+                K_h = K_ * dyn_share.h;  //to update state
+                K_x = K_ * h_x_cur; //to update cov
                 //#else
                 //	K_= P_ * h_x.transpose() * (h_x * P_ * h_x.transpose() + h_v * R * h_v.transpose()).inverse();
                 //#endif
             } else {
 #ifdef USE_sparse
-                // Eigen::Matrix<scalar_type, n, n> b = Eigen::Matrix<scalar_type, n, n>::Identity();
-                // Eigen::SparseQR<Eigen::SparseMatrix<scalar_type>, Eigen::COLAMDOrdering<int>> solver;
-                spMt A = h_x_.transpose() * h_x_;
-                cov_ P_temp = (P_ / R).inverse();
-                P_temp.template block<12, 12>(0, 0) += A;
-                P_temp = P_temp.inverse();
-                /*
-                Eigen::Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_x_cur = Eigen::Matrix<scalar_type,
-                Eigen::Dynamic, Eigen::Dynamic>::Zero(dof_Measurement, n); h_x_cur.col(0) = h_x_.col(0); h_x_cur.col(1)
-                = h_x_.col(1); h_x_cur.col(2) = h_x_.col(2); h_x_cur.col(3) = h_x_.col(3); h_x_cur.col(4) = h_x_.col(4);
-                h_x_cur.col(5) = h_x_.col(5);
-                h_x_cur.col(6) = h_x_.col(6);
-                h_x_cur.col(7) = h_x_.col(7);
-                h_x_cur.col(8) = h_x_.col(8);
-                h_x_cur.col(9) = h_x_.col(9);
-                h_x_cur.col(10) = h_x_.col(10);
-                h_x_cur.col(11) = h_x_.col(11);
-                */
-                K_ = P_temp.template block<n, 12>(0, 0) * h_x_.transpose();
-                K_x = cov_::Zero();
-                K_x.template block<n, 12>(0, 0) = P_inv.template block<n, 12>(0, 0) * HTH;
-                /*
-                solver.compute(R_);
-                Eigen::Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> R_in_temp = solver.solve(b);
-                spMt R_in =R_in_temp.sparseView();
-                spMt K_temp = h_x.transpose() * R_in * h_x;
-                cov_ P_temp = P_.inverse();
-                P_temp += K_temp;
-                K_ = P_temp.inverse() * h_x.transpose() * R_in;
-                */
+               
 #else
+                //计算卡尔曼增益
                 cov P_temp = (P_ / R).inverse();
+                
                 // Eigen::Matrix<scalar_type, 12, Eigen::Dynamic> h_T = h_x_.transpose();
+                // HT * H 
                 Eigen::Matrix<scalar_type, 12, 12> HTH = h_x_.transpose() * h_x_;
+                // 提前加在了p_temp上，
                 P_temp.template block<12, 12>(0, 0) += HTH;
-                /*
-                Eigen::Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_x_cur = Eigen::Matrix<scalar_type,
-                Eigen::Dynamic, Eigen::Dynamic>::Zero(dof_Measurement, n);
-                //std::cout << "line 1767" << std::endl;
-                h_x_cur.col(0) = h_x_.col(0);
-                h_x_cur.col(1) = h_x_.col(1);
-                h_x_cur.col(2) = h_x_.col(2);
-                h_x_cur.col(3) = h_x_.col(3);
-                h_x_cur.col(4) = h_x_.col(4);
-                h_x_cur.col(5) = h_x_.col(5);
-                h_x_cur.col(6) = h_x_.col(6);
-                h_x_cur.col(7) = h_x_.col(7);
-                h_x_cur.col(8) = h_x_.col(8);
-                h_x_cur.col(9) = h_x_.col(9);
-                h_x_cur.col(10) = h_x_.col(10);
-                h_x_cur.col(11) = h_x_.col(11);
-                */
-                cov P_inv = P_temp.inverse();
-                // std::cout << "line 1781" << std::endl;
-                K_h = P_inv.template block<n, 12>(0, 0) * h_x_.transpose() * dyn_share.h;
-                // std::cout << "line 1780" << std::endl;
-                // cov_ HTH_cur = cov_::Zero();
-                // HTH_cur. template block<12, 12>(0, 0) = HTH;
+                //过程等价于 HT × P × H
+                cov P_inv = P_temp.inverse();//P^-1
+
+                K_h = P_inv.template block<n, 12>(0, 0) * h_x_.transpose() * dyn_share.h;  //Kh
                 K_x.setZero();  // = cov_::Zero();
-                K_x.template block<n, 12>(0, 0) = P_inv.template block<n, 12>(0, 0) * HTH;
+                K_x.template block<n, 12>(0, 0) = P_inv.template block<n, 12>(0, 0) * HTH;// k
                 // K_= (h_x_.transpose() * h_x_ + (P_/R).inverse()).inverse()*h_x_.transpose();
 #endif
             }
 
             // K_x = K_ * h_x_;
-            Matrix<scalar_type, n, 1> dx_ = K_h + (K_x - Matrix<scalar_type, n, n>::Identity()) * dx_new;
+            Matrix<scalar_type, n, 1> dx_ = K_h + (K_x - Matrix<scalar_type, n, n>::Identity()) * dx_new;//第一次dx_new为
+            std::cout << "dx_" << dx_;
             state x_before = x_;
             x_.boxplus(dx_);
             dyn_share.converge = true;
@@ -1727,12 +1653,14 @@ class esekf {
                 }
             }
             if (dyn_share.converge) t++;
+            //如果更新量足够小，t++
 
-            if (!t && i == maximum_iter - 2) {
+            if (!t && i == maximum_iter - 2) {//如果一直不收敛，就强行设为true
+               
                 dyn_share.converge = true;
             }
 
-            if (t > 1 || i == maximum_iter - 1) {
+            if (t > 1 || i == maximum_iter - 1) {//已经收敛或者最后一次迭代
                 L_ = P_;
                 // std::cout << "iteration time" << t << "," << i << std::endl;
                 Matrix<scalar_type, 3, 3> res_temp_SO3;
@@ -1800,32 +1728,7 @@ class esekf {
                         P_.template block<1, 2>(i, idx) = (P_.template block<1, 2>(i, idx)) * res_temp_S2.transpose();
                     }
                 }
-
-                // if(n > dof_Measurement)
-                // {
-                // 	Eigen::Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_x_cur = Eigen::Matrix<scalar_type,
-                // Eigen::Dynamic, Eigen::Dynamic>::Zero(dof_Measurement, n); h_x_cur.topLeftCorner(dof_Measurement, 12)
-                // = h_x_;
-                // 	/*
-                // 	h_x_cur.col(0) = h_x_.col(0);
-                // 	h_x_cur.col(1) = h_x_.col(1);
-                // 	h_x_cur.col(2) = h_x_.col(2);
-                // 	h_x_cur.col(3) = h_x_.col(3);
-                // 	h_x_cur.col(4) = h_x_.col(4);
-                // 	h_x_cur.col(5) = h_x_.col(5);
-                // 	h_x_cur.col(6) = h_x_.col(6);
-                // 	h_x_cur.col(7) = h_x_.col(7);
-                // 	h_x_cur.col(8) = h_x_.col(8);
-                // 	h_x_cur.col(9) = h_x_.col(9);
-                // 	h_x_cur.col(10) = h_x_.col(10);
-                // 	h_x_cur.col(11) = h_x_.col(11);
-                // 	*/
-                // 	P_ = L_ - K_*h_x_cur * P_;
-                // }
-                // else
-                //{
                 P_ = L_ - K_x.template block<n, 12>(0, 0) * P_.template block<12, n>(0, 0);
-                //}
                 // solve_time += omp_get_wtime() - solve_start;
                 return;
             }

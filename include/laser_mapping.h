@@ -55,6 +55,7 @@ class LaserMapping {
     /// interface of mtk, customized obseravtion model
     void ObsModel(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_data);
 
+    void ObsModel(InvariantKF::invkf::State24 &s, InvariantKF::invkf::LioZHModel<double> &obs_data);
     ////////////////////////////// debug save / show ////////////////////////////////////////////////////////////////
     void PublishPath(const ros::Publisher pub_path);
     void PublishOdometry(const ros::Publisher &pub_odom_aft_mapped);

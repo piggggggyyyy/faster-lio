@@ -11,6 +11,7 @@
 #include <Eigen/Core>
 #include <Eigen/Dense>
 #include <boost/array.hpp>
+#include <deque>
 #include <unsupported/Eigen/ArpackSupport>
 
 #include "faster_lio/Pose6D.h"
